@@ -163,6 +163,8 @@
 
     try {
       const result = await onSave(value);
+      initialValue = typeof result.content === 'string' ? result.content : value;
+      currentSource = 'config';
       saveStatus = result.message;
       setTimeout(() => {
         saveStatus = '';

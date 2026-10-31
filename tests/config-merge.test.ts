@@ -10,6 +10,9 @@
 
 import { describe, expect, test, vi } from 'vitest';
 
+import { parseFormConfig, readConfigField, updateConfigField, saveConfigContent } from '../src/lib/api/config-editor';
+import type { ConfigField } from '../src/lib/api/config-editor';
+
 const warnMock = vi.fn();
 
 vi.mock('../src/lib/server/logger', () => ({
@@ -157,5 +160,64 @@ describe('mergeIntoConfigText', () => {
       expect(result.text.endsWith(suffix)).toBe(true);
       expect(result.text.includes(replacement)).toBe(true);
     });
+  });
+});
+
+describe('guided config editing preserves advanced settings', () => {
+  const filename: ConfigField = {
+    path: ['extractor', 'filename'], label: 'Filename', kind: 'string', description: '',
+  };
+  const retries: ConfigField = {
+    path: ['extractor', 'retries'], label: 'Retries', kind: 'number', description: '',
+  };
+  test('changes one field without losing credentials, postprocessors, or site overrides', () => {
+    const original = { extractor: { filename: 'old', pixiv: { 'refresh-token': 'example' },
+      fanbox: { filename: 'site-specific' }, postprocessors: [{ name: 'metadata' }] },
+      output: { mode: 'auto' } };
+    const changed = JSON.parse(updateConfigField(JSON.stringify(original), filename, 'new'));
+    expect(changed).toEqual({ ...original, extractor: { ...original.extractor, filename: 'new' } });
+  });
+  test('clearing a setting removes the override rather than writing an empty string', () => {
+    const changed = JSON.parse(updateConfigField('{"extractor":{"retries":0}}', retries, ''));
+    expect(changed.extractor).not.toHaveProperty('retries');
+  });
+  test('rejects invalid roots and malformed JSON', () => {
+    for (const content of ['null', '[]', 'true', '{"extractor":']) {
+      expect(() => parseFormConfig(content)).toThrow();
+    }
+  });
+  test('keeps conditional and incompatible parent values untouched', () => {
+    for (const content of ['{"extractor":{"filename":{"":"x"}}}', '{"extractor":false}']) {
+      expect(readConfigField(content, filename).editable).toBe(false);
+      expect(() => updateConfigField(content, filename, 'x')).toThrow();
+    }
+  });
+  test('validates numeric input and retains an explicit zero', () => {
+    expect(JSON.parse(updateConfigField('{}', retries, '0')).extractor.retries).toBe(0);
+    for (const value of ['-1', '1.5', 'Infinity', 'abc']) {
+      expect(() => updateConfigField('{}', retries, value)).toThrow();
+    }
+  });
+});
+
+describe('configuration save acknowledgement', () => {
+  test('waits for the save response and keeps server-normalized content', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      success: true, data: { success: true, content: '{"extractor":{"base-directory":"/downloads"}}' },
+    }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const result = await saveConfigContent('{"extractor":{"base-directory":"./gallery-dl"}}');
+      expect(result.content).toContain('/downloads');
+      expect(fetchMock.mock.calls[0][1].method).toBe('POST');
+    } finally { vi.unstubAllGlobals(); }
+  });
+  test('rejects failed saves instead of marking the editor as saved', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      success: false, error: 'The destination is not allowed.',
+    }), { status: 400 })));
+    try {
+      await expect(saveConfigContent('{}')).rejects.toThrow('The destination is not allowed.');
+    } finally { vi.unstubAllGlobals(); }
   });
 });
