@@ -162,7 +162,7 @@
                 <label for={id} class="font-medium">{field.label}</label>
                 {#if field.kind === 'boolean'}
                   <select {id} disabled={!current.editable} value={current.text}
-                    aria-describedby={`${id}-help`} class="rounded border bg-surface p-2"
+                    aria-describedby={`${id}-help`} class="rounded-control border bg-surface p-2"
                     onchange={(event) => changeField(field, event.currentTarget.value)}>
                     <option value="">Default / inherited</option>
                     <option value="true">Enabled</option>
@@ -174,7 +174,7 @@
                     step={field.kind === 'number' ? 1 : undefined}
                     disabled={!current.editable} value={current.text}
                     placeholder="Default / inherited" aria-describedby={`${id}-help`}
-                    class="rounded border bg-surface p-2"
+                    class="rounded-control border bg-surface p-2"
                     onchange={(event) => changeField(field, event.currentTarget.value)} />
                 {/if}
                 <p id={`${id}-help`} class="text-sm">
