@@ -11,175 +11,190 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { themeStore } from '$lib/themes/themeStore';
-  import { enhance } from '$app/forms';
   import { ConfigEditor, Icon } from '$lib/components';
-  import { Info, PageLayout } from '$lib/components/ui';
+  import { Button, Info, PageLayout } from '$lib/components/ui';
   import {
-    type ConfigSaveSuccessResult,
-    isConfigSaveSuccess,
-    type FormFailureResult,
-    isFormFailure,
-  } from '$lib/types/form-results';
-  import { clientLogger as logger } from '$lib/client/logger';
+    configFields, parseFormConfig, readConfigField, updateConfigField, fetchConfigContent, saveConfigContent,
+    type ConfigField,
+  } from '$lib/api/config-editor';
 
   const { data } = $props();
-
   let theme = $state<'light' | 'dark'>('light');
-  let _isSubmitting = $state(false);
-  let jsonContent = $state('{}');
-  let lastSavedISO = $state<string | undefined>(undefined);
-  let saveError = $state<string | null>(null);
-
-  // React to data changes from invalidation
-  const loadMessage = $derived(data.message ?? '');
+  let mode = $state<'form' | 'json'>('form');
+  let content = $state('{}');
+  let savedContent = $state('{}');
+  let source = $state<'config' | 'example'>('example');
+  let lastSavedISO = $state<string | undefined>();
+  let busy = $state(false);
+  let message = $state('');
+  let error = $state('');
+  const dirty = $derived(content !== savedContent || source === 'example');
   const loadError = $derived(data.success ? '' : (data.error ?? 'Failed to load configuration'));
+  const formError = $derived.by(() => {
+    try { parseFormConfig(content); return ''; }
+    catch (err) { return err instanceof Error ? err.message : 'Invalid configuration'; }
+  });
 
-  // Update jsonContent and lastSavedISO when changes
   $effect(() => {
-    jsonContent = data.success ? data.content : '{}';
-    lastSavedISO = data.success ? data.mtimeISO : undefined;
+    if (data.success) {
+      // The example includes placeholder credentials and unrelated site settings.
+      const loadedContent = data.source === 'example'
+        ? '{\n  "extractor": {"base-directory": "./gallery-dl"}\n}' : data.content;
+      content = loadedContent;
+      savedContent = loadedContent;
+      source = data.source === 'config' ? 'config' : 'example';
+      lastSavedISO = data.mtimeISO;
+    }
   });
 
-  let configForm: HTMLFormElement | undefined = $state();
+  onMount(() => themeStore.isDark.subscribe((dark) => { theme = dark ? 'dark' : 'light'; }));
 
-  async function saveJsonFile(content: string) {
-    if (!configForm) {
-      return { message: 'Form not available' };
+  function changeField(field: ConfigField, text: string) {
+    try {
+      content = updateConfigField(content, field, text);
+      error = '';
+      message = '';
+    } catch (err) {
+      error = err instanceof Error ? err.message : 'Invalid setting';
     }
+  }
 
-    const contentInput = configForm.querySelector('input[name="content"]') as HTMLInputElement;
-    if (contentInput) {
-      contentInput.value = content;
+  async function saveConfig(value: string): Promise<{ message: string; content: string }> {
+    if (busy) { throw new Error('A configuration request is already in progress.'); }
+    busy = true;
+    error = '';
+    message = '';
+    try {
+      parseFormConfig(value);
+      const result = await saveConfigContent(value);
+      const persisted = typeof result.content === 'string' ? result.content : value;
+      content = persisted;
+      savedContent = persisted;
+      source = 'config';
+      lastSavedISO = new Date().toISOString();
+      message = result.message ?? 'Configuration saved.';
+      return { message, content: persisted };
+    } catch (err) {
+      error = err instanceof Error ? err.message : 'Failed to save configuration';
+      throw err;
+    } finally { busy = false; }
+  }
+
+  async function saveForm(event: SubmitEvent) {
+    event.preventDefault();
+    try { await saveConfig(content); } catch { /* Error is shown above the form. */ }
+  }
+
+  async function reload() {
+    if (dirty && !window.confirm('Discard unsaved configuration changes?')) { return; }
+    busy = true;
+    error = '';
+    message = '';
+    try {
+      const result = await fetchConfigContent('/api/config');
+      content = result.source === 'example' ? '{\n  "extractor": {"base-directory": "./gallery-dl"}\n}' : result.content;
+      savedContent = content;
+      source = result.source ?? 'config';
+      lastSavedISO = result.mtimeISO;
+      message = 'Configuration reloaded.';
+    } catch (err) {
+      error = err instanceof Error ? err.message : 'Failed to reload configuration';
+    } finally { busy = false; }
+  }
+
+  async function importConfig(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) { return; }
+    if (dirty && !window.confirm('Replace unsaved changes with the imported file?')) {
+      input.value = '';
+      return;
     }
-
-    configForm.requestSubmit();
-
-    return { message: 'Submitting...' };
-  }
-
-  onMount(() => {
-    return themeStore.isDark.subscribe((dark) => {
-      theme = dark ? 'dark' : 'light';
-    });
-  });
-
-  function handleUploadSuccess(file: File) {
-    logger.info('Config uploaded successfully', { filename: file.name });
-  }
-
-  function handleReloadSuccess(content: string) {
-    logger.info('Config reloaded successfully');
-    // Update page to the reloaded content
-    jsonContent = content;
-  }
-
-  function handleReloadError(error: Error) {
-    logger.error('Config reload failed:', error);
-  }
-
-  function handleRestoreSuccess(content: string) {
-    logger.info('Default configuration restored successfully');
-    // Update page to the restored content
-    jsonContent = content;
-  }
-
-  function handleRestoreError(error: Error) {
-    logger.error('Restore defaults failed:', error);
-  }
-
-  function handleLastSavedChange(newLastSaved: string | undefined) {
-    lastSavedISO = newLastSaved;
+    busy = true;
+    error = '';
+    message = '';
+    try {
+      const imported = await file.text();
+      parseFormConfig(imported);
+      content = imported;
+      message = 'Configuration imported. Save configuration to apply it.';
+    } catch (err) {
+      error = err instanceof Error ? err.message : 'Failed to import configuration';
+    } finally {
+      busy = false;
+      input.value = '';
+    }
   }
 </script>
 
 <PageLayout title="Configuration">
-  {#snippet icon()}
-    <Icon
-      iconName="json"
-      size={32}
-    />
-  {/snippet}
-
+  {#snippet icon()}<Icon iconName="json" size={32} />{/snippet}
   {#if loadError}
-    <Info
-      variant="warning"
-      size="lg"
-    >
-      {loadError}
-    </Info>
+    <Info variant="warning">{loadError}</Info>
   {:else}
-    {#if loadMessage}
-      <Info
-        variant="warning"
-        size="lg"
-        class="my-8"
-      >
-        {loadMessage}
-      </Info>
+    <div class="mb-6 flex flex-wrap items-center gap-3">
+      <Button variant={mode === 'form' ? 'primary' : 'outline-primary'} disabled={busy}
+        onclick={() => (mode = 'form')}>Basic settings</Button>
+      <Button variant={mode === 'json' ? 'primary' : 'outline-primary'} disabled={busy}
+        onclick={() => (mode = 'json')}>Advanced JSON</Button>
+      <Button disabled={busy} onclick={reload}>Reload</Button>
+      <span class="text-sm" aria-live="polite">{busy ? 'Saving or loading…' : dirty ? 'Unsaved changes' : 'Saved'}</span>
+    </div>
+    {#if source === 'example'}
+      <Info class="mb-6">No configuration has been saved yet. Start with the settings below.
+        Empty fields use gallery-dl defaults. No example credentials will be saved.</Info>
     {/if}
-
-    {#if saveError}
-      <Info
-        variant="warning"
-        title="Error"
-        dismissible
-        onDismiss={() => (saveError = null)}
-        class="my-8"
-      >
-        {saveError}
-      </Info>
+    {#if message}<div role="status" class="mb-4"><Info>{message}</Info></div>{/if}
+    {#if error}<div role="alert" class="mb-4"><Info variant="warning">{error}</Info></div>{/if}
+    {#if mode === 'form'}
+      {#if formError}
+        <Info variant="warning">{formError}</Info>
+      {:else}
+        <form onsubmit={saveForm}>
+          <fieldset disabled={busy} class="grid gap-6 rounded-surface border p-6">
+            <legend class="px-2 font-semibold">Download settings</legend>
+            <p class="text-sm">General settings apply to all sites unless overridden.
+              Other settings are preserved and can be edited in Advanced JSON.</p>
+            {#each configFields as field (field.path.join('.'))}
+              {@const id = field.path.join('-')}
+              {@const current = readConfigField(content, field)}
+              <div class="grid gap-2">
+                <label for={id} class="font-medium">{field.label}</label>
+                {#if field.kind === 'boolean'}
+                  <select {id} disabled={!current.editable} value={current.text}
+                    aria-describedby={`${id}-help`} class="rounded-control border bg-surface p-2"
+                    onchange={(event) => changeField(field, event.currentTarget.value)}>
+                    <option value="">Default / inherited</option>
+                    <option value="true">Enabled</option>
+                    <option value="false">Disabled</option>
+                  </select>
+                {:else}
+                  <input {id} type={field.kind === 'number' ? 'number' : 'text'}
+                    min={field.kind === 'number' ? 0 : undefined}
+                    step={field.kind === 'number' ? 1 : undefined}
+                    disabled={!current.editable} value={current.text}
+                    placeholder="Default / inherited" aria-describedby={`${id}-help`}
+                    class="rounded-control border bg-surface p-2"
+                    onchange={(event) => changeField(field, event.currentTarget.value)} />
+                {/if}
+                <p id={`${id}-help`} class="text-sm">
+                  {current.editable ? field.description : 'This setting uses an advanced value. Edit it in Advanced JSON.'}
+                </p>
+              </div>
+            {/each}
+            <div><Button type="submit" variant="primary" disabled={!dirty || busy}
+              loading={busy}>Save configuration</Button></div>
+          </fieldset>
+        </form>
+      {/if}
+    {:else}
+      <label class="mb-4 block">
+        Import JSON (not saved until you click Save)
+        <input type="file" accept=".json,application/json" disabled={busy} onchange={importConfig}
+          class="mt-2 block" />
+      </label>
+      <ConfigEditor bind:value={content} {theme} onSave={saveConfig} readonly={busy}
+        height="65vh" {source} enableSourceBadge {lastSavedISO} />
     {/if}
-
-    <form
-      bind:this={configForm}
-      method="POST"
-      use:enhance={() => {
-        _isSubmitting = true;
-        saveError = null;
-        return async ({ result }) => {
-          _isSubmitting = false;
-
-          if (result.type === 'success' && result.data) {
-            if (isConfigSaveSuccess(result.data)) {
-              const data: ConfigSaveSuccessResult = result.data;
-              // If paths were transformed, update editor
-              if (data.transformed && data.content) {
-                jsonContent = data.content;
-              }
-              lastSavedISO = new Date().toISOString();
-            }
-          } else if (result.type === 'failure' && result.data && isFormFailure(result.data)) {
-            const data: FormFailureResult = result.data;
-            saveError = data.error ?? 'Failed to save configuration';
-          } else if (result.type !== 'success') {
-            saveError = 'Failed to save configuration';
-          }
-        };
-      }}
-    >
-      <input
-        type="hidden"
-        name="content"
-        value={jsonContent}
-      />
-      <ConfigEditor
-        bind:value={jsonContent}
-        {theme}
-        onSave={saveJsonFile}
-        height="75vh"
-        enableUpload
-        enableReload
-        enableSourceBadge
-        enableRestoreDefaults
-        source={data.success ? data.source : 'example'}
-        {lastSavedISO}
-        onUploadSuccess={handleUploadSuccess}
-        onReloadSuccess={handleReloadSuccess}
-        onReloadError={handleReloadError}
-        onRestoreSuccess={handleRestoreSuccess}
-        onRestoreError={handleRestoreError}
-        onLastSavedChange={handleLastSavedChange}
-      />
-    </form>
   {/if}
 </PageLayout>
