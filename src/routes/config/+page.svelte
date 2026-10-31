@@ -161,23 +161,23 @@
               <div class="grid gap-2">
                 <label for={id} class="font-medium">{field.label}</label>
                 {#if field.kind === 'boolean'}
-                  <select id={id} disabled={!current.editable} value={current.text}
-                    aria-describedby={id + '-help'} class="rounded border bg-surface p-2"
+                  <select {id} disabled={!current.editable} value={current.text}
+                    aria-describedby={`${id}-help`} class="rounded border bg-surface p-2"
                     onchange={(event) => changeField(field, event.currentTarget.value)}>
                     <option value="">Default / inherited</option>
                     <option value="true">Enabled</option>
                     <option value="false">Disabled</option>
                   </select>
                 {:else}
-                  <input id={id} type={field.kind === 'number' ? 'number' : 'text'}
+                  <input {id} type={field.kind === 'number' ? 'number' : 'text'}
                     min={field.kind === 'number' ? 0 : undefined}
                     step={field.kind === 'number' ? 1 : undefined}
                     disabled={!current.editable} value={current.text}
-                    placeholder="Default / inherited" aria-describedby={id + '-help'}
+                    placeholder="Default / inherited" aria-describedby={`${id}-help`}
                     class="rounded border bg-surface p-2"
                     onchange={(event) => changeField(field, event.currentTarget.value)} />
                 {/if}
-                <p id={id + '-help'} class="text-sm">
+                <p id={`${id}-help`} class="text-sm">
                   {current.editable ? field.description : 'This setting uses an advanced value. Edit it in Advanced JSON.'}
                 </p>
               </div>
